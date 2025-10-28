@@ -16,8 +16,7 @@ env/
 /Datasets/
 data/
 
-# Trained models
-trained_model.keras
+# Training history
 training_hist.json
 
 # IDE / Editor

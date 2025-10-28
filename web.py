@@ -4,13 +4,27 @@ import numpy as np
 
 # Tensorflow Model Prediction
 def model_prediction(test_image):
-    model = tf.keras.models.load_model('trained_model.keras')
-    image = tf.keras.preprocessing.image.load_img(test_image, target_size=(128, 128))
-    input_arr = tf.keras.preprocessing.image.img_to_array(image)
-    input_arr = np.array([input_arr])  # Convert single image to a batch
-    prediction = model.predict(input_arr)
-    result_index = np.argmax(prediction)
-    return result_index
+    import os
+    
+    # Get the absolute path to the model file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(current_dir, 'trained_model.keras')
+    
+    try:
+        if not os.path.exists(model_path):
+            st.error(f"Model file not found at: {model_path}")
+            return None
+            
+        model = tf.keras.models.load_model(model_path)
+        image = tf.keras.preprocessing.image.load_img(test_image, target_size=(128, 128))
+        input_arr = tf.keras.preprocessing.image.img_to_array(image)
+        input_arr = np.array([input_arr])  # Convert single image to a batch
+        prediction = model.predict(input_arr)
+        result_index = np.argmax(prediction)
+        return result_index
+    except Exception as e:
+        st.error(f"Error loading model or processing image: {str(e)}")
+        return None
 
 # Custom CSS for styling
 st.markdown("""
@@ -142,9 +156,12 @@ elif app_mode == "Crop Disease Recognition":
         if st.button(" Start Analysis 🚀", type="primary"):
             with st.spinner("🔍 Analyzing leaf patterns..."):
                 result_index = model_prediction(test_image)
-                
-                # Class Names Formatting
-                class_name = [
+                if result_index is None:
+                    st.error("Could not process the image. Please ensure the model file is present and try again.")
+                    st.info("If the problem persists, please contact support.")
+                else:
+                    # Class Names Formatting
+                    class_name = [
                     'Apple - Apple Scab',
                     'Apple - Black Rot',
                     'Apple - Cedar Apple Rust',
