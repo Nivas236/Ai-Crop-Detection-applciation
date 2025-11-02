@@ -3,7 +3,14 @@ import tensorflow as tf
 import numpy as np
 import os
 from PIL import Image
-import cv2
+
+# OpenCV is optional — handle environments where cv2 is not installed
+try:
+    import cv2
+    cv2_available = True
+except Exception:
+    cv2 = None
+    cv2_available = False
 
 # Check if uploaded image is a leaf
 def is_leaf_image(test_image):
@@ -19,14 +26,28 @@ def is_leaf_image(test_image):
         pil_img = Image.open(test_image).convert("RGB")
         img_array = np.array(pil_img)
 
-        # Convert to OpenCV format (BGR) for further processing
-        img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        # If OpenCV is available, use it for robust color / contour operations
+        if cv2_available:
+            # Convert to OpenCV format (BGR) for further processing
+            img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        # Convert to HSV for better color analysis
-        img_hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-        h_channel = img_hsv[:, :, 0].astype(np.float32)
-        s_channel = img_hsv[:, :, 1].astype(np.float32) / 255.0
-        v_channel = img_hsv[:, :, 2].astype(np.float32) / 255.0
+            # Convert to HSV for better color analysis
+            img_hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
+            h_channel = img_hsv[:, :, 0].astype(np.float32)
+            s_channel = img_hsv[:, :, 1].astype(np.float32) / 255.0
+            v_channel = img_hsv[:, :, 2].astype(np.float32) / 255.0
+        else:
+            # Fallback: approximate HSV-like channels from RGB using numpy
+            r = img_array[:, :, 0].astype(np.float32) / 255.0
+            g = img_array[:, :, 1].astype(np.float32) / 255.0
+            b = img_array[:, :, 2].astype(np.float32) / 255.0
+            # crude hue approximation: use arctan2 to map to angle then scale to 0-180
+            hue = (np.arctan2((np.sqrt(3) * (g - b)), (2 * r - g - b + 1e-6)) + np.pi) / (2 * np.pi) * 180.0
+            sat = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+            val = np.maximum.reduce([r, g, b])
+            h_channel = hue.astype(np.float32)
+            s_channel = sat.astype(np.float32)
+            v_channel = val.astype(np.float32)
 
         # Green hue range (in OpenCV: 0-180). Allow wider range for diseased leaves.
         green_mask = ((h_channel >= 25) & (h_channel <= 95) & (s_channel >= 0.18) & (v_channel >= 0.15))
@@ -73,22 +94,16 @@ def is_leaf_image(test_image):
         }
 
         # Thresholds: require meaningful, central, contiguous green to avoid background-only greenery
-        # Relaxed to better accept diseased/yellowed leaves while blocking objects
-        cond_green_total = green_percentage >= 0.18
-        cond_green_center = center_green_percentage >= 0.10
-        cond_largest_region = largest_area_ratio >= 0.08
-        cond_exg = mean_exg >= 5.0
-        cond_texture = std_dev >= 11.0
+        cond_green_total = green_percentage >= 0.22
+        cond_green_center = center_green_percentage >= 0.16
+        cond_largest_region = largest_area_ratio >= 0.12
+        cond_exg = mean_exg >= 8.0
+        cond_texture = std_dev >= 12.0
         cond_brightness = 25.0 <= brightness <= 230.0
 
         # Require center green and a contiguous region, plus one other vegetation signal
         vegetation_signals = [cond_exg, cond_texture, cond_green_total]
         is_leaf = cond_green_center and cond_largest_region and any(vegetation_signals) and cond_brightness
-
-        # Fallback acceptance for severely diseased/dried leaves: allow low-green
-        # images if there is strong texture and a sizable contiguous region
-        if (not is_leaf) and cond_largest_region and cond_texture and cond_brightness and (center_green_percentage >= 0.06 or mean_exg >= 3.0):
-            is_leaf = True
 
         if is_leaf:
             message = "Image passed the leaf validation checks."
@@ -397,7 +412,7 @@ elif app_mode == "Crop Disease Recognition":
     # File Upload Section
     st.subheader("📤 Step 1: Upload Leaf Image")
     test_image = st.file_uploader("Choose a plant leaf image:", type=["jpg", "png", "jpeg"], 
-                                 help="Select clear photo of a single plant leaf")
+                                 help="Select clear photo of a single plant leaf", key="upload_main")
     
     if test_image:
         # Image Preview
@@ -419,8 +434,9 @@ elif app_mode == "Crop Disease Recognition":
                     test_image.seek(0)
 
                 if not is_leaf:
-                    st.error("🚫 This image does not appear to be a plant leaf.")
-                    st.info("**Recommendations:**\n- Capture the leaf in natural lighting\n- Ensure the leaf dominates the frame\n- Avoid heavy shadows or background clutter\n- Retake the photo from a clearer angle")
+                    st.error("❌ **This is not a leaf.**")
+                    st.warning("The uploaded image does not appear to be a plant leaf. Please upload a clear photo of a plant leaf.")
+                    st.info("💡 **Tips:**\n- Take a clear photo of a single leaf\n- Ensure good lighting\n- Make sure the leaf fills most of the frame")
                     st.stop()
                 else:
                     st.success("Leaf validation passed. Proceeding with disease analysis.")
@@ -431,8 +447,8 @@ elif app_mode == "Crop Disease Recognition":
                     st.error("Could not process the image. Please ensure the model file is present and try again.")
                     st.info("If the problem persists, please contact support.")
                 else:
-                    # Class Names Formatting
-                    class_name = [
+                        # Class Names Formatting
+                        class_name = [
                     'Apple - Apple Scab',
                     'Apple - Black Rot',
                     'Apple - Cedar Apple Rust',
@@ -476,10 +492,10 @@ elif app_mode == "Crop Disease Recognition":
                 # Display Results
                 st.markdown("---")
                 st.subheader("📋 Diagnosis Report")
-                
+
                 diagnosis = class_name[result_index]
                 plant, disease = diagnosis.split(" - ")
-                
+
                 # Convert confidence to percentage
                 confidence_percent = confidence * 100
                 
@@ -503,19 +519,19 @@ elif app_mode == "Crop Disease Recognition":
                               "- The leaf may be from an unusual angle or damaged\n\n"
                               "**Recommendation**: Please consult with a local agricultural expert for accurate identification.")
                 
-                if "Healthy" in disease:
-                    st.success(f"🎉 Great news! This {plant.lower()} plant appears healthy!")
-                else:
-                    st.error(f"⚠️ Alert: Potential {disease} detected in {plant.lower()}!")
-                
-                # Result Card
-                st.markdown(f"""
-                <div class="prediction-result">
-                    <h3 style="color:#2e7d32;"> Plant: {plant}</h3>
-                    <h3 style="color:#d32f2f;">Condition: {disease}</h3>
-                </div>
-                """, unsafe_allow_html=True)
-                
+                    if "Healthy" in disease:
+                        st.success(f"🎉 Great news! This {plant.lower()} plant appears healthy!")
+                    else:
+                        st.error(f"⚠️ Alert: Potential {disease} detected in {plant.lower()}!")
+
+                    # Result Card
+                    st.markdown(f"""
+                    <div class="prediction-result">
+                        <h3 style="color:#2e7d32;"> Plant: {plant}</h3>
+                        <h3 style="color:#d32f2f;">Condition: {disease}</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+
                 # Display Disease Information
                 if "Healthy" not in disease and not is_low_confidence:
                     st.markdown("---")
@@ -531,3 +547,157 @@ elif app_mode == "Crop Disease Recognition":
                     
                     with st.expander("💊 Treatment Recommendations"):
                         st.warning(disease_info["treatment"])
+
+
+    st.header(" Crop Disease Analysis 🔍")
+
+    st.markdown("---")
+
+    
+
+    # File Upload Section
+
+    st.subheader("📤 Step 1: Upload Leaf Image")
+
+    test_image = st.file_uploader("Choose a plant leaf image:", type=["jpg", "png", "jpeg"], 
+
+                                 help="Select clear photo of a single plant leaf", key="upload_secondary")
+
+    
+
+    if test_image:
+
+        # Image Preview
+
+        st.subheader("Image Preview 📷")
+
+        with st.expander("Click to view uploaded image", expanded=True):
+
+            st.image(test_image, use_container_width=True, caption="Uploaded Leaf Image")
+
+        
+
+        # Prediction Section
+
+        st.subheader("Step 2: Disease Diagnosis")
+
+        if st.button(" Start Analysis 🚀", type="primary"):
+            with st.spinner("🔍 Analyzing leaf patterns..."):
+                # First, check if the image is actually a leaf
+                if not is_leaf_image(test_image):
+                    st.error("🚫 **NOT A LEAF IMAGE DETECTED**")
+                    st.warning("""
+                    ⚠️ The uploaded image does not appear to contain a plant leaf. This could be:
+                    - An image of a different object
+                    - A close-up photo not containing leaves
+                    - An image with poor quality or unusual content
+                    """)
+                    st.info("**Please upload a clear image of a plant leaf for disease detection.**")
+                    st.stop()
+                
+                # If it passes leaf check, proceed with prediction
+                result_index, confidence = model_prediction(test_image)
+                if result_index is None:
+                    st.error("Could not process the image. Please ensure the model file is present and try again.")
+                    st.info("If the problem persists, please contact support.")
+                else:
+                    # Class Names Formatting
+                    class_name = [
+                        'Apple - Apple Scab',
+                        'Apple - Black Rot',
+                        'Apple - Cedar Apple Rust',
+                        'Apple - Healthy',
+                        'Blueberry - Healthy',
+                        'Cherry - Powdery Mildew',
+                        'Cherry - Healthy',
+                        'Corn - Cercospora Leaf Spot',
+                        'Corn - Common Rust',
+                        'Corn - Northern Leaf Blight',
+                        'Corn - Healthy',
+                        'Grape - Black Rot',
+                        'Grape - Esca (Black Measles)',
+                        'Grape - Leaf Blight',
+                        'Grape - Healthy',
+                        'Orange - Huanglongbing (Citrus Greening)',
+                        'Peach - Bacterial Spot',
+                        'Peach - Healthy',
+                        'Bell Pepper - Bacterial Spot',
+                        'Bell Pepper - Healthy',
+                        'Potato - Early Blight',
+                        'Potato - Late Blight',
+                        'Potato - Healthy',
+                        'Raspberry - Healthy',
+                        'Soybean - Healthy',
+                        'Squash - Powdery Mildew',
+                        'Strawberry - Leaf Scorch',
+                        'Strawberry - Healthy',
+                        'Tomato - Bacterial Spot',
+                        'Tomato - Early Blight',
+                        'Tomato - Late Blight',
+                        'Tomato - Leaf Mold',
+                        'Tomato - Septoria Leaf Spot',
+                        'Tomato - Spider Mites',
+                        'Tomato - Target Spot',
+                        'Tomato - Yellow Leaf Curl Virus',
+                        'Tomato - Mosaic Virus',
+                        'Tomato - Healthy'
+                    ]
+                    
+                    # Display Results
+                    st.markdown("---")
+                    st.subheader("📋 Diagnosis Report")
+
+                    diagnosis = class_name[result_index]
+                    plant, disease = diagnosis.split(" - ")
+
+                    # Convert confidence to percentage
+                    confidence_percent = confidence * 100
+                    
+                    # Check for low confidence (unknown/out-of-dataset detection)
+                    CONFIDENCE_THRESHOLD = 50.0
+                    is_low_confidence = confidence_percent < CONFIDENCE_THRESHOLD
+                    
+                    # Display confidence score
+                    if confidence_percent >= 80:
+                        st.metric("Detection Confidence", f"{confidence_percent:.1f}%", delta="High", delta_color="normal")
+                    elif confidence_percent >= CONFIDENCE_THRESHOLD:
+                        st.metric("Detection Confidence", f"{confidence_percent:.1f}%", delta="Moderate", delta_color="off")
+                    else:
+                        st.metric("Detection Confidence", f"{confidence_percent:.1f}%", delta="Low", delta_color="inverse")
+                    
+                    # Warning for low confidence
+                    if is_low_confidence:
+                        st.warning("⚠️ **UNKNOWN LEAF DETECTED**: The uploaded leaf image may not match any plant in our database. This could mean:\n\n"
+                                  "- The plant species is not supported yet\n"
+                                  "- The image quality may be poor or unclear\n"
+                                  "- The leaf may be from an unusual angle or damaged\n\n"
+                                  "**Recommendation**: Please consult with a local agricultural expert for accurate identification.")
+                    
+                    if "Healthy" in disease:
+                        st.success(f"🎉 Great news! This {plant.lower()} plant appears healthy!")
+                    else:
+                        st.error(f"⚠️ Alert: Potential {disease} detected in {plant.lower()}!")
+                    
+                    # Result Card
+                    st.markdown(f"""
+                    <div class="prediction-result">
+                        <h3 style="color:#2e7d32;"> Plant: {plant}</h3>
+                        <h3 style="color:#d32f2f;">Condition: {disease}</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Display Disease Information
+                    if "Healthy" not in disease and not is_low_confidence:
+                        st.markdown("---")
+                        st.subheader("📖 Disease Information & Treatment")
+                        disease_info = get_disease_info(plant, disease)
+                        
+                        with st.expander("ℹ️ Disease Description", expanded=True):
+                            st.info(disease_info["description"])
+                        
+                        with st.expander("🔍 Common Symptoms"):
+                            for symptom in disease_info["symptoms"]:
+                                st.write(f"• {symptom}")
+                        
+                        with st.expander("💊 Treatment Recommendations"):
+                            st.warning(disease_info["treatment"])
